@@ -1,0 +1,286 @@
+### About Cyclistic
+
+Cyclistic is a bike-sharing company started in 2016 with 5,824 stations across Chicago. It has flexible pricing plans, with single-ride and full-day passes or annual memberships.
+
+### Context and Goals
+
+Annual members are much more profitable for the company than casual riders, so the company is aiming at maximizing the number of annual members as the key to future company growth, which means converting casual members (single-ride and full-day passes) into annual members through marketing strategies.
+
+#### Question
+The director of marketing has assigned us the following question to be answered:
+*How to annual members and casual riders uses differ?*
+
+We will try to compare the following metrics between users and members:
+
+- Usage per day
+- Usage duration
+- When do they use the bikes?
+- Distance traveled
+- Type of bike used
+- Usage over time, per bike type
+
+### Data
+
+We'll be using in-house data from historical trips from February 2022 to January 2023 in csv files organized byt month. Data is considered credible because of its origin.
+
+
+### Loading Needed Packages
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(janitor)
+```
+
+### Loading Data
+
+```{r}
+feb22 <- read.csv("202202-divvy-tripdata.csv")
+mar22 <- read.csv("202203-divvy-tripdata.csv")
+apr22 <- read.csv("202204-divvy-tripdata.csv")
+may22 <- read.csv("202205-divvy-tripdata.csv")
+jun22 <- read.csv("202206-divvy-tripdata.csv")
+jul22 <- read.csv("202207-divvy-tripdata.csv")
+aug22 <- read.csv("202208-divvy-tripdata.csv")
+sep22 <- read.csv("202209-divvy-publictripdata.csv")
+oct22 <- read.csv("202210-divvy-tripdata.csv")
+nov22 <- read.csv("202211-divvy-tripdata.csv")
+dec22 <- read.csv("202212-divvy-tripdata.csv")
+jan23 <- read.csv("202301-divvy-tripdata.csv")
+
+```
+
+### Checking if Data Structures Match
+We need the janitor package to use this function.
+
+```{r}
+compare_df_cols(list(feb22, mar22, apr22, may22, jun22, jul22, aug22, sep22, oct22, nov22, dec22, jan23))
+```
+
+From this we know that all data is in the same format and with all columns using the same names, which is great. Our main issue is that all the dates are characters. We can join all data  first, and then clean and fix what's wrong.
+
+### Merging Datasets
+
+```{r}
+trips <- bind_rows(feb22, mar22, apr22, may22, jun22, jul22, aug22, sep22, oct22, nov22, dec22, jan23)
+rm(feb22, mar22, apr22, may22, jun22, jul22, aug22, sep22, oct22, nov22, dec22, jan23)
+```
+
+We now have a data set with 5,754,248 observations! Let's check if values make sense.
+
+### Cleaning and Formatting the Data
+
+```{r}
+unique(trips$rideable_type)
+unique(trips$start_station_name)
+unique(trips$start_station_id)
+```
+
+I see the following problems:
+- docked_bike doesn't seem useful;
+- "" station name;
+- "DIVVY 001 - Warehouse test station" station id suggests it's a testing station, so not a real ride;
+- "chargingstx" 1 to 5 station id's look weird. Let's investigate that.
+
+```{r}
+trips %>%
+  filter(start_station_id == "chargingstx1") %>%
+  head()
+```
+There are six rows with "chargingstx1" start station id. Even weird because most bikes are classic and not electric, but besides that, it looks like legit rides, so we'll keep those.
+Now a quick summary check.
+
+```{r}
+summary(trips)
+```
+
+Quickly checking summary() returns 5,899 NA values on coordinates.
+We'll just get rid of the columns we don't need and the rows with NA's.
+
+```{r}
+trips <- trips %>%
+  filter(start_station_id != "DIVVY 001 - Warehouse test station" | end_station_id != "DIVVY 001 - Warehouse test station" | rideable_type != "docked_bike") %>%
+  select(-c(start_station_name, end_station_name, start_station_id, end_station_id)) %>%
+  drop_na()
+```
+
+Now let's turn those dates and times from characters to the proper format and calculate ride duration. We'll also remove rows with values under 60 seconds (this will include negative values which are errors)
+
+```{r}
+trips$start <- as_datetime(trips$started_at)
+trips$end <- as_datetime(trips$ended_at)
+trips$duration <- difftime(trips$end, trips$start)
+trips <- subset(trips, duration > 60)
+```
+
+
+We should also get some date information on separate columns.
+
+```{r}
+trips$date <- as.Date(trips$started_at)
+trips$month <- format(as.Date(trips$date), "%m")
+trips$weekday <- format(as.Date(trips$date), "%A")
+trips$start_time <- format(as.POSIXct(trips$start), format = "%H")
+trips$start_time <- as.numeric(trips$start_time)
+```
+
+We need some more cleaning on the weekdays, as my system time is in the Brazilian standard and we need the week days in English.
+
+```{r}
+trips$weekday[trips$weekday == "domingo"] <- "sunday"
+trips$weekday[trips$weekday == "segunda-feira"] <- "monday"
+trips$weekday[trips$weekday == "terça-feira"] <- "tuesday"
+trips$weekday[trips$weekday == "quarta-feira"] <- "wednesday"
+trips$weekday[trips$weekday == "quinta-feira"] <- "thursday"
+trips$weekday[trips$weekday == "sexta-feira"] <- "friday"
+trips$weekday[trips$weekday == "sábado"] <- "saturday"
+
+trips$weekday <- ordered(trips$weekday, levels=c("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"))
+```
+
+
+#### Calculating Distances Between Start and End Stations
+
+With the geosphere package we can calculate the distance from start and end stations of each ride. That can give us some idea if the bikes are being used for long  distances of just casual rides in the same area. This takes a while to process. Distances in meters.
+
+```{r}
+library(geosphere)
+
+trips <- trips %>% 
+  rowwise() %>% 
+  mutate(distance = geosphere::distHaversine(c(start_lng, start_lat),
+                                             c(end_lng, end_lat)))
+
+trips <- trips %>%
+  drop_na()
+```
+
+
+### Analysis
+
+Let's compare the trip duration data by subscription type:
+
+```{r}
+aggregate(trips$duration ~ trips$member_casual, FUN = mean)
+aggregate(trips$duration ~ trips$member_casual, FUN = median)
+aggregate(trips$duration ~ trips$member_casual, FUN = min)
+aggregate(trips$duration ~ trips$member_casual, FUN = max)
+
+aggregate(trips$duration ~ trips$member_casual + trips$weekday, FUN = mean)
+```
+
+This is interesting and already shows differences between casual riders and members, but we need graphs to better visualize the answers to our questions.
+
+### 1. Rides per Week Day
+
+```{r}
+trips %>%
+  select(weekday, member_casual) %>%
+  group_by(member_casual, weekday) %>%
+  summarise(number_of_rides = n()) %>%
+  ggplot(aes(x = weekday, y = number_of_rides, fill = member_casual)) +
+  geom_col(position = "dodge") +
+  labs(x = "Week days", y = "Number of Rides", title = "Number of Rides per week day for casual riders and members", 
+       subtitle = "from February 2022 to January 2023", fill = "User type")
+  
+```
+
+We can clearly see most member rides happen in week days, while most casual rides happen in the weekend, suggesting members use the bikes for commuting.
+
+### 2. Usage Duration per Week Day
+
+```{r}
+trips %>%
+  select(weekday, duration, member_casual) %>%
+  group_by(member_casual, weekday) %>%
+  summarise(duration_mean = mean(duration)) %>%
+  ggplot(aes(x = weekday, y = duration_mean, fill = member_casual)) +
+  geom_col(position = "dodge") +
+  labs(x = "Week days", y = "Mean Duration of Rides (seconds)", title = "Mean Duration of Rides per week day for Casual riders and Members", 
+       subtitle = "from February 2022 to January 2023", fill = "User type")
+```
+Although members have more numbers of rides overall, casual riders ride the longest everyday of the week! Maybe they're using more electric bikes?
+
+### 3. Time of Day Comparison
+
+```{r}
+trips %>%
+  select(start_time, member_casual) %>%
+  group_by(member_casual) %>%
+  ggplot(aes(x = start_time, fill = member_casual)) +
+  geom_histogram(bins = 23) +
+  facet_grid(member_casual ~ .) +
+  geom_vline(aes(xintercept=mean(start_time), color = member_casual), linetype="dashed", size=1) +
+  scale_x_continuous(breaks = seq(0, 23, by = 1)) +
+  labs(x = "Start time of Ride", y = "Number of rides", title = "When do users ride more in the day?", 
+       subtitle = "from February 2022 to January 2023", fill = "User type")
+```
+
+It seems both casual riders and members use the bikes similarly during the day, but member usage also peaks at around 8 in the morning, suggesting once again the bikes are used for commutes.
+
+### 4. Distance Traveled per Week Day
+
+
+```{r}
+trips %>%
+  select(weekday, distance, member_casual) %>%
+  filter(distance > 0) %>%
+  group_by(member_casual, weekday) %>%
+  summarise(distance_mean = mean(distance)) %>%
+  ggplot(aes(x = weekday, y = distance_mean, fill = member_casual)) +
+  geom_col(position = "dodge") +
+  labs(x = "Week days", y = "Mean Distance (Meters)", title = "Mean Distance Between Start and End Stations", 
+       subtitle = "from February 2022 to January 2023", fill = "User type")
+
+```
+Not much of a difference between casual riders and members. Distances averages are pretty constant during the week as well.
+
+### 5. Type of Bike Preference
+
+```{r}
+trips %>%
+  select(weekday, rideable_type, member_casual) %>%
+  filter(rideable_type == "classic_bike" | rideable_type == "electric_bike") %>%
+  group_by(rideable_type, weekday, member_casual) %>%
+  summarise(number_type = n()) %>%
+  ggplot(aes(x = weekday, y = number_type, fill = rideable_type)) +
+  geom_col(position = "dodge") +
+  facet_grid(member_casual ~ .) +
+  labs(x = "Week day", y = "Number of rides", title = "Do users prefer Electric Bikes?", 
+       subtitle = "from February 2022 to January 2023", fill = "Type of Bike")
+```
+We can see that casual users prefer electric bikes, while members use classic bikes most of the time.
+
+### 6. Changes During the Year
+
+```{r}
+trips %>%
+  select(month, rideable_type, member_casual) %>%
+  filter(rideable_type == "classic_bike" | rideable_type == "electric_bike") %>%
+  group_by(month, member_casual, rideable_type) %>%
+  summarise(ride_count = n()) %>%
+  ggplot(aes(x = factor(month, level=c('02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '01')), y = ride_count, fill = rideable_type)) +
+  geom_col(position = "dodge") +
+  facet_grid(member_casual ~ .) +
+  labs(x = "Month", y = "Number of rides", title = "Number of Rides over time", 
+       subtitle = "from February 2022 to January 2023", fill = "Type of Bike")
+```
+
+More bikes are used during the summer, as expected, but since July 2022, casual riders prefer electric bikes.
+
+### What we discovered:
+
+- Casual Riders are more active on the weekends;
+- Members are more active on weekdays, suggesting use for commuting to work;
+- Mean Duration of Rides is much bigger for Casual Riders on all weekdays even if ride numbers are lower than Members';
+- Bike usage during the day is similar for both groups, but members usage also peak around 7 to 9 am, suggesting commutes again;
+- Interestingly, casual riders also peak aroung 5 pm;
+- Mean distance from start to end station is pretty close for both groups;
+- Members prefer classic bikes;
+- Casual riders prefer electric bikes;
+- Around July 2022, casual riders began using electric bikes more than classic bikes.\
+
+*Thanks* for the interest in my Case Study! This is my first project using R and my first data analysis project as well.
